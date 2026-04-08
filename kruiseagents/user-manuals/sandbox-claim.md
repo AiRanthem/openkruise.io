@@ -207,6 +207,29 @@ Sandbox.beta_create(template="demo", timeout=600, auto_pause=True)  # auto pause
 
 </Tabs>
 
+### Never Timeout
+
+By default, sandboxes will be automatically deleted after reaching the timeout. If you want the sandbox to never timeout and persist indefinitely, you can use the never-timeout extension.
+
+> Currently, the never-timeout feature is only supported through E2B.
+
+<Tabs>
+  <TabItem value="E2B" label="E2B">
+
+> `e2b.agents.kruise.io/never-timeout` is an OpenKruise Agents extension field and
+> will not be added to the Sandbox resource as metadata.
+
+```python
+from e2b_code_interpreter import Sandbox
+
+sbx = Sandbox.create(template="demo", metadata={
+    "e2b.agents.kruise.io/never-timeout": "true"
+})
+```
+
+  </TabItem>
+</Tabs>
+
 ### Adding Metadata
 
 You can add some metadata (labels or annotations) to the `Sandbox` resource when claiming a sandbox, to categorize sandboxes claimed multiple times or add some custom information.
@@ -289,22 +312,81 @@ spec:
 You can dynamically mount a PV when claiming a sandbox, specifying a separate mount volume for each sandbox. This capability relies on `agent-runtime` injected into the Sandbox
 and will also affect delivery efficiency to some extent.
 
-> Currently, dynamic persistent volume mounting functionality is only supported through E2B.
+> ⚠️ To use dynamic persistent volume mounting, you must configure `csi` in the `runtimes` field of your SandboxSet. For details, refer to the [Runtime Injection](./runtime-injection.md) documentation.
 
 <Tabs>
   <TabItem value="E2B" label="E2B">
 
-> `e2b.agents.kruise.io/csi-volume-name` and `e2b.agents.kruise.io/csi-mount-point` are OpenKruise Agents extension fields and
-> will not be added to the Sandbox resource as metadata.
+> The following extension keys are OpenKruise Agents extension fields and will not be added to the Sandbox resource as metadata.
+
+**Single volume mount:**
 
 ```python
 from e2b_code_interpreter import Sandbox
 
 sbx = Sandbox.create(template="some-template", timeout=300, metadata={
     "e2b.agents.kruise.io/csi-volume-name": "oss-pv-test",
-    "e2b.agents.kruise.io/csi-mount-point": "/data"
+    "e2b.agents.kruise.io/csi-mount-point": "/data",
+    # Optional: specify a sub path within the persistent volume
+    "e2b.agents.kruise.io/csi-subpath": "sub/dir"
 })
 ```
+
+**Multiple volumes mount:**
+
+To mount multiple volumes at once, use the `e2b.agents.kruise.io/csi-volume-config` extension with a JSON array:
+
+```python
+import json
+from e2b_code_interpreter import Sandbox
+
+csi_config = json.dumps([
+    {"pvName": "oss-pv-1", "mountPath": "/data1"},
+    {"pvName": "oss-pv-2", "mountPath": "/data2", "subPath": "sub/dir", "readOnly": True}
+])
+
+sbx = Sandbox.create(template="some-template", timeout=300, metadata={
+    "e2b.agents.kruise.io/csi-volume-config": csi_config
+})
+```
+
+Parameter description:
+
+| Extension Key                            | Description                                   | Required           |
+|------------------------------------------|-----------------------------------------------|--------------------|
+| `e2b.agents.kruise.io/csi-volume-name`   | Persistent volume name                        | Yes (single mount) |
+| `e2b.agents.kruise.io/csi-mount-point`   | Mount target path in container                | Yes (single mount) |
+| `e2b.agents.kruise.io/csi-subpath`       | Sub path within the persistent volume         | No                 |
+| `e2b.agents.kruise.io/csi-volume-config` | JSON array of mount configs (for multi-mount) | Yes (multi mount)  |
+
+  </TabItem>
+  <TabItem value="SandboxClaim" label="SandboxClaim">
+
+```yaml
+apiVersion: agents.kruise.io/v1alpha1
+kind: SandboxClaim
+metadata:
+  name: demo-sandbox-claim
+  namespace: default
+spec:
+  templateName: demo
+  dynamicVolumesMount:
+    - pvName: "oss-pv-1"
+      mountPath: "/data1"
+    - pvName: "oss-pv-2"
+      mountPath: "/data2"
+      subPath: "sub/dir"
+      readOnly: true
+```
+
+Field description:
+
+| Field       | Description                           | Required |
+|-------------|---------------------------------------|----------|
+| `pvName`    | Persistent volume name                | Yes      |
+| `mountPath` | Mount target path in container        | Yes      |
+| `subPath`   | Sub path within the persistent volume | No       |
+| `readOnly`  | Whether to mount as read-only         | No       |
 
   </TabItem>
 </Tabs>
@@ -338,7 +420,7 @@ Due to various reasons, errors may occur during the sandbox claiming process, ca
 <Tabs>
   <TabItem value="E2B" label="E2B">
 
-> `e2b.agents.kruise.io/csi-volume-name` and `e2b.agents.kruise.io/csi-mount-point` are OpenKruise Agents extension fields and
+> `e2b.agents.kruise.io/reserve-failed-sandbox` is an OpenKruise Agents extension field and
 > will not be added to the Sandbox resource as metadata.
 
 ```python
@@ -361,6 +443,79 @@ metadata:
 spec:
   templateName: demo
   reserveFailedSandbox: true
+```
+
+  </TabItem>
+</Tabs>
+
+### Environment Variables
+
+You can inject environment variables into the sandbox when claiming. These environment variables will be passed to `agent-runtime` for initialization. This feature requires `agent-runtime` to be enabled.
+
+> ⚠️ Note: Currently, environment variables injected through this feature only take effect for the E2B `commands.run` API. They are not available as process-level environment variables in the sandbox's main container.
+
+<Tabs>
+  <TabItem value="E2B" label="E2B">
+
+```python
+from e2b_code_interpreter import Sandbox
+
+sbx = Sandbox.create(template="demo", env_vars={
+    "MY_ENV": "value",
+    "API_KEY": "sk-xxx"
+})
+```
+
+  </TabItem>
+  <TabItem value="SandboxClaim" label="SandboxClaim">
+
+```yaml
+apiVersion: agents.kruise.io/v1alpha1
+kind: SandboxClaim
+metadata:
+  name: demo-sandbox-claim
+  namespace: default
+spec:
+  templateName: demo
+  envVars:
+    MY_ENV: "value"
+    API_KEY: "sk-xxx"
+```
+
+  </TabItem>
+</Tabs>
+
+### Wait Ready Timeout
+
+When certain operations (such as in-place image update, creating a new sandbox, etc.) are performed during claiming, the sandbox may need time to become ready. You can specify a wait-ready timeout to control the maximum time to wait for the sandbox to be ready.
+
+<Tabs>
+  <TabItem value="E2B" label="E2B">
+
+> `e2b.agents.kruise.io/wait-ready-timeout-seconds` is an OpenKruise Agents extension field and
+> will not be added to the Sandbox resource as metadata.
+
+```python
+from e2b_code_interpreter import Sandbox
+
+sbx = Sandbox.create(template="demo", metadata={
+    "e2b.agents.kruise.io/wait-ready-timeout-seconds": "60"  # wait up to 60 seconds
+})
+```
+
+  </TabItem>
+  <TabItem value="SandboxClaim" label="SandboxClaim">
+
+```yaml
+apiVersion: agents.kruise.io/v1alpha1
+kind: SandboxClaim
+metadata:
+  name: demo-sandbox-claim
+  namespace: default
+spec:
+  templateName: demo
+  # Default: 30s. Format: duration string (e.g., "3h", "200s", "15m")
+  waitReadyTimeout: 60s
 ```
 
   </TabItem>
